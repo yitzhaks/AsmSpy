@@ -3,9 +3,9 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Text;
 using System.Xml;
 using AsmSpy.Core;
+using static System.FormattableString;
 
 namespace AsmSpy.CommandLine
 {
@@ -26,14 +26,14 @@ namespace AsmSpy.CommandLine
         {
             try
             {
-                var document = Generate(_result, false);
+                var document = Generate(_result, skipSystem: false);
                 using (var writer = XmlWriter.Create(_exportFileName, new XmlWriterSettings{Indent = true}))
                 {
                     document.WriteTo(writer);
                 }
                 _logger.LogMessage(string.Format(CultureInfo.InvariantCulture, "Exported to file {0}", _exportFileName));
             }
-            catch (System.UnauthorizedAccessException uae)
+            catch (UnauthorizedAccessException uae)
             {
                 _logger.LogError(string.Format(CultureInfo.InvariantCulture, "Could not write file {0} due to error {1}", _exportFileName, uae.Message));
             }
@@ -43,7 +43,7 @@ namespace AsmSpy.CommandLine
             }
         }
 
-        public static XmlDocument Generate(IDependencyAnalyzerResult result, bool skipSystem = false)
+        public static XmlDocument Generate(IDependencyAnalyzerResult result, bool skipSystem)
         {
             var document = new XmlDocument();
             document.LoadXml(@"
@@ -51,12 +51,11 @@ namespace AsmSpy.CommandLine
                     <assemblyBinding xmlns=""urn: schemas - microsoft - com:asm.v1"">
                     </assemblyBinding>
                 </runtime>");
-            var assemblyGroups = result.Assemblies.Values.GroupBy(x => x.AssemblyName.Name);
-            foreach (var assemblyGroup in assemblyGroups.OrderBy(i => i.Key))
+            var assemblyGroups = result.Assemblies.Values.GroupBy(x => x.AssemblyName);
+
+            foreach (var assemblyGroup in assemblyGroups.OrderBy(i => i.Key.Name))
             {
-                if (skipSystem &&
-                    (assemblyGroup.Key.ToUpperInvariant().StartsWith("SYSTEM", StringComparison.OrdinalIgnoreCase) ||
-                     assemblyGroup.Key.ToUpperInvariant().StartsWith("MSCORLIB", StringComparison.OrdinalIgnoreCase)))
+                if (skipSystem && AssemblyInformationProvider.IsSystemAssembly(assemblyGroup.Key))
                 {
                     continue;
                 }
@@ -75,7 +74,6 @@ namespace AsmSpy.CommandLine
                     }
                 }
 
-
                 var sortedAssemblies = assemblyInfos.OrderByDescending(a => a.AssemblyName.Version).ToList();
                 var highestAssemblyVersion = sortedAssemblies.Select(a => a.AssemblyName).First().Version;
                 var lowestAssemblyVersion = sortedAssemblies.Select(a => a.AssemblyName).Last().Version;
@@ -91,15 +89,15 @@ namespace AsmSpy.CommandLine
                 var assemblyIdentity = document.CreateElement("assemblyIdentity");
                 assemblyIdentity.SetAttribute("name", assemblyToUse.Name);
                 var publicKeyToken = GetPublicKeyTokenFromAssembly(assemblyToUse);
-                if (publicKeyToken != "None")
+                if (publicKeyToken != null)
                 {
                     assemblyIdentity.SetAttribute("publicKeyToken", publicKeyToken);
                 }
                 var cultureName = assemblyToUse.CultureName;
-                assemblyIdentity.SetAttribute("culture", cultureName == "" ? "neutral" : cultureName);
+                assemblyIdentity.SetAttribute("culture", string.IsNullOrEmpty(cultureName) ? "neutral" : cultureName);
                 depedententAssembly.AppendChild(assemblyIdentity);
                 var bindingRedirect = document.CreateElement("bindingRedirect");
-                bindingRedirect.SetAttribute("oldVersion", $"{lowestAssemblyVersion}-{highestAssemblyVersion}");
+                bindingRedirect.SetAttribute("oldVersion", Invariant($"{lowestAssemblyVersion}-{highestAssemblyVersion}"));
                 bindingRedirect.SetAttribute("newVersion", assemblyToUse.Version.ToString());
                 depedententAssembly.AppendChild(bindingRedirect);
                 document.DocumentElement.FirstChild.AppendChild(depedententAssembly);
@@ -111,14 +109,10 @@ namespace AsmSpy.CommandLine
         private static string GetPublicKeyTokenFromAssembly(AssemblyName assembly)
         {
             var bytes = assembly.GetPublicKeyToken();
-            if (bytes == null || bytes.Length == 0)
-                return "None";
+            if (!bytes?.Any() ?? true)
+                return null;
 
-            var publicKeyToken = string.Empty;
-            for (var i = 0; i < bytes.GetLength(0); i++)
-                publicKeyToken += $"{bytes[i]:x2}";
-
-            return publicKeyToken;
+            return string.Join(string.Empty, bytes.Select(@byte => @byte.ToString("x2", CultureInfo.InvariantCulture)));
         }
     }
 }
